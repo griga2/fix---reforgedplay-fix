@@ -1,0 +1,34 @@
+ReForgedPlay Fix 0.3.2 / Minecraft 1.21.1 / NeoForge
+
+Base: user-supplied reforgedplay-fix-1.21.1-0.3.2-patched.jar.
+An unmodified upstream original was not supplied.
+Input SHA256: 7b625eac1e2d74d31ffb264fa3bd97fd650feb4bbf94701c39c04e8d640e2669
+Output SHA256: c45e08dfb5495f6207a91c2adfc4b762bdd6c65a8447686335a1036058872914
+
+Changed through ASM, without raw byte replacement:
+- LangResourcePack constructor: LoadingModList.getModFileById("reforgedplaymod"); matching error message.
+- ReplayModBackend.getVersion: same corrected container lookup.
+- IrisODSFrameCapturer static initializer: same corrected container lookup.
+
+The supplied neoforge.mods.toml already has exactly one mods entry, ID reforgedplaymod; it is preserved.
+All other JAR entries are byte-for-byte unchanged when decompressed.
+All 10 declared Mixin configurations and all 26 language resource files are preserved.
+assets/replaymod and resource namespaces are unchanged.
+No Mixins, recording, playback, camera, UI or export code was removed.
+
+Checks passed:
+- ZIP CRC and unique entry names; entry membership unchanged.
+- ASM parsing of 7690 top-level classes.
+- ASM BasicVerifier analysis of 32 methods in the three changed classes.
+- javap -verbose of three changed classes and Mixin_InjectDynamicResourcePacks.
+- Public LangResourcePack() constructor remains present and Mixin invocation unchanged.
+- TOML has exactly one mod declaration and referenced Mixin configs exist.
+- Declared jarjar dependency files exist.
+
+LIMITS: Real Minecraft / NeoForge startup, runtime Mixin application, recording,
+playback and export have NOT been tested. Static checks do not prove those work.
+This cloud workspace has no configured Minecraft client installation or game session.
+
+Installation: move all old ReForgedPlay JARs outside mods. Install only
+reforgedplay-fix-1.21.1-0.3.2-fixed.jar. Do not install it alongside the old JAR.
+If startup fails, provide the new latest.log and crash report.
