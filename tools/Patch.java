@@ -1,10 +1,89 @@
 import java.nio.file.*;
 import java.util.*;
 import java.util.zip.*;
+import javax.tools.ToolProvider;
 import jdk.internal.org.objectweb.asm.*;
 import jdk.internal.org.objectweb.asm.tree.*;
 import jdk.internal.org.objectweb.asm.tree.analysis.*;
 public class Patch {
+ static final String READER="com/replaymod/replaystudio/protocol/Packet$Reader";
+ static final String COMPOUND="Lcom/github/steveice10/opennbt/tag/builtin/CompoundTag;";
+ static final String TAG="Lcom/github/steveice10/opennbt/tag/builtin/Tag;";
+
+ static MethodNode compileTagDecoder(Path input) throws Exception {
+  Path dir=Files.createTempDirectory("replay-tag-decoder-");
+  Path dependency=dir.resolve("opennbt.jar");
+  try(ZipFile zip=new ZipFile(input.toFile())) {
+   Files.write(dependency,zip.getInputStream(zip.getEntry("META-INF/jars/opennbt-0a02214.jar")).readAllBytes());
+  }
+  Path source=dir.resolve("RegistryTagDecoder.java");
+  Files.writeString(source,"""
+   import java.io.*;
+   import com.github.steveice10.opennbt.tag.TagRegistry;
+   import com.github.steveice10.opennbt.tag.TagCreateException;
+   import com.github.steveice10.opennbt.tag.builtin.Tag;
+   final class RegistryTagDecoder {
+    private static Tag readAnyTag(InputStream input) throws IOException {
+     DataInputStream data=new DataInputStream(input);
+     int type=data.readUnsignedByte();
+     if(type==0)return null;
+     data.readUTF(); // Reader$1 supplies an empty name for the 1.20.2+ network format.
+     Tag tag;
+     try {tag=TagRegistry.createInstance(type);}
+     catch(TagCreateException error) {throw new IOException("Failed to create registry NBT tag",error);}
+     tag.read(data);
+     return tag;
+    }
+   }
+   """);
+  if(ToolProvider.getSystemJavaCompiler().run(null,null,null,"-classpath",dependency.toString(),"-d",dir.toString(),source.toString())!=0)
+   throw new IllegalStateException("Could not compile generic NBT decoder");
+  ClassNode helper=new ClassNode();new ClassReader(Files.readAllBytes(dir.resolve("RegistryTagDecoder.class"))).accept(helper,0);
+  return helper.methods.stream().filter(m->m.name.equals("readAnyTag")).findFirst().orElseThrow();
+ }
+
+ static void addGenericNbtReader(ClassNode c,MethodNode decoder) {
+  List<MethodNode> added=new ArrayList<>();
+  for(MethodNode m:c.methods)if(m.name.equals("readNBT")) {
+   MethodNode copy=new MethodNode(m.access,m.name,m.desc,m.signature,m.exceptions.toArray(String[]::new));m.accept(copy);
+   copy.name="readAnyNBT";copy.desc=m.desc.replace(COMPOUND,TAG);
+   int nbtioCalls=0;
+   for(AbstractInsnNode ins:copy.instructions.toArray())if(ins instanceof MethodInsnNode call) {
+    if(call.owner.equals(READER) && call.name.equals("readNBT")) {
+     call.name="readAnyNBT";call.desc=call.desc.replace(COMPOUND,TAG);
+    } else if(call.owner.equals("com/github/steveice10/opennbt/NBTIO") && call.name.equals("readTag") && ++nbtioCalls==1) {
+     call.owner=READER;call.name="readAnyTag";call.desc="(Ljava/io/InputStream;)"+TAG;
+    }
+   }
+   added.add(copy);
+  }
+  if(added.size()!=2)throw new IllegalStateException("Expected two NBT reader overloads");
+  c.methods.addAll(added);c.methods.add(decoder);
+ }
+
+ static int patchRegistryCallsites(ClassNode c) {
+  String targetMethod=switch(c.name) {
+   case "com/replaymod/replaystudio/protocol/packets/PacketConfigRegistries" -> "lambda$read$0";
+   case "com/replaymod/replaystudio/protocol/packets/PacketEnabledPacksData" -> "lambda$null$0";
+   case "com/replaymod/replaystudio/protocol/registry/Registries" -> "lambda$null$3";
+   default -> "";
+  };
+  int count=0;
+  for(MethodNode m:c.methods)if(m.name.equals(targetMethod)) {
+   for(AbstractInsnNode ins:m.instructions.toArray()) {
+    if(ins instanceof MethodInsnNode call && call.owner.equals(READER) && call.name.equals("readNBT")) {
+     call.name="readAnyNBT";call.desc=call.desc.replace(COMPOUND,TAG);count++;
+    }
+    if(ins instanceof FrameNode frame) {
+     // Conditional optional-tag reads now merge Tag with null, rather than CompoundTag with null.
+     for(List<Object> types:Arrays.asList(frame.local,frame.stack))if(types!=null)
+      for(int i=0;i<types.size();i++)if("com/github/steveice10/opennbt/tag/builtin/CompoundTag".equals(types.get(i)))
+       types.set(i,"com/github/steveice10/opennbt/tag/builtin/Tag");
+    }
+   }
+  }
+  return count;
+ }
  static int patchLanguageEnumeration(ClassNode c) {
   int changes=0;
   for(MethodNode m:c.methods) {
@@ -38,7 +117,8 @@ public class Patch {
   return changes;
  }
  public static void main(String[] args) throws Exception {
-  int patched=0, classes=0, methods=0, annotations=0, resourcePatches=0;
+  int patched=0, classes=0, methods=0, annotations=0, resourcePatches=0, nbtCallsites=0, nbtReaders=0;
+  MethodNode tagDecoder=compileTagDecoder(Path.of(args[0]));
   try(ZipFile in=new ZipFile(args[0]); ZipOutputStream out=new ZipOutputStream(Files.newOutputStream(Path.of(args[1])))) {
    Set<String> names=new HashSet<>();
    for(var entries=in.entries();entries.hasMoreElements();) {
@@ -80,6 +160,9 @@ public class Patch {
       resourcePatches=patchLanguageEnumeration(c);
       changed|=resourcePatches>0;
      }
+     if(c.name.equals(READER)) {addGenericNbtReader(c,tagDecoder);nbtReaders++;changed=true;}
+     int registryChanges=patchRegistryCallsites(c);
+     nbtCallsites+=registryChanges;changed|=registryChanges>0;
      if(changed) {
       ClassWriter w=new ClassWriter(ClassWriter.COMPUTE_MAXS);c.accept(w);b=w.toByteArray();
       ClassNode reread=new ClassNode();new ClassReader(b).accept(reread,ClassReader.EXPAND_FRAMES);
@@ -91,6 +174,7 @@ public class Patch {
   }
   if(annotations!=5)throw new Exception("Expected five registration changes, got "+annotations);
   if(resourcePatches!=3)throw new Exception("Expected three language enumeration fixes, got "+resourcePatches);
+  if(nbtReaders!=1 || nbtCallsites!=3)throw new Exception("Unexpected NBT patch counts: "+nbtReaders+" / "+nbtCallsites);
   System.out.println("Registration changes="+annotations);
   if(patched!=3)throw new Exception("Expected three patches, got "+patched);
   System.out.println("Parsed classes="+classes+"; patched lookup="+patched+"; verified methods="+methods);

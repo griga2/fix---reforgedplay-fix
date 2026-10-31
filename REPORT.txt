@@ -1,104 +1,123 @@
-ReForgedPlay Fix 0.3.2 — ревизия 3, проверено 31.10.2026
-Цель: клиент Minecraft 1.21.1 / NeoForge 21.1.234 / Java 21.
+ReForgedPlay Fix 0.3.2 — ревизия 4, 31.10.2026
+Клиент: Minecraft 1.21.1 / NeoForge 21.1.234 / Java 21.
 
 База: присланный patched.jar, а не оригинальный upstream JAR.
 SHA256 базы: 7b625eac1e2d74d31ffb264fa3bd97fd650feb4bbf94701c39c04e8d640e2669
-SHA256 результата: 5c6bd9841b2da9e9ca4b86f3f004339fec34f424a8e8fc187318e7d1d0724a00
+SHA256 результата: 72f077c02ed323c0951c5ebf2fd6f233d5f2ce9fbfa899e654b4812c1d1a434d
 
-ИСПРАВЛЕНИЯ РЕВИЗИЙ 1–2 СОХРАНЕНЫ
+НОВЫЙ СБОЙ И ПРИЧИНА
 
-В присланной базе TOML уже объявляет ровно один reforgedplaymod.
-- LangResourcePack, ReplayModBackend.getVersion, IrisODSFrameCapturer:
-  поиск собственного ModFile использует reforgedplaymod.
-- ReplayModBackend: @Mod и EventBusSubscriber.modid соответствуют TOML.
-- KeyBindingRegistry, ReplayModRecording: исправлен EventBusSubscriber.modid.
-- У пустого ReForgedPlayModStub удалена только @Mod; сам класс сохранён.
+Новый отчёт: Description: Saving replay file; IOException:
+Expected root tag to be a CompoundTag, was 7.
+Стек: OpenNBT -> Packet.Reader.readNBT -> PacketConfigRegistries ->
+RegistriesBuilder -> ReplayInputStream -> MarkerProcessor.
 
-В базе регистрировалась пустая заглушка вместо настоящего backend. Конструктор
-ReplayModBackend должен создавать ReplayMod, а тот — ReplayModReplay, чей
-конструктор присваивает instance. Подписчик construct вызывает initModules на
-событии FMLConstructModEvent. Исключения не подавлялись и Mixins не удалялись.
+Сбой воспроизведён настоящими библиотеками ReplayStudio/OpenNBT из JAR на пакете
+реестров с корневым ByteArrayTag (тип 7). Старый readNBT допускал только CompoundTag,
+хотя структуры данных реестров и запись пакетов уже используют общий тип Tag.
+В актуальном upstream ReplayStudio чтение также возвращает общий Tag:
+https://github.com/ReplayMod/ReplayStudio/blob/a2e312635cd305d0dd57218b810c6088b59c18b0/src/main/java/com/replaymod/replaystudio/protocol/Packet.java
 
-ДОПОЛНИТЕЛЬНЫЕ ИСПРАВЛЕНИЯ РЕВИЗИИ 3
+ИСПРАВЛЕНИЕ РЕВИЗИИ 4
 
-Функциональный тест настоящего LangResourcePack выявил ошибки listResources:
-1. Шаблон .lang не принимал заглавные буквы в имени региона (en_US.lang).
-2. Имя JSON строилось из группы языка дважды: en_en вместо en_us.
-3. Отложенный поставщик передавал lang/en_us.json в readFile, ожидающий полный
-   путь assets/replaymod/lang/en_us.json; после исправления поиска это дало бы null.
-Исправлены шаблон, группа региона с Locale.ROOT и полный путь поставщика.
+- Packet$Reader: добавлены два перегруженных readAnyNBT и приватный readAnyTag,
+  использующие TagRegistry. Сохранены версия-зависимое имя корневого тега,
+  обработка пустого тега и старый сжатый формат. Старые readNBT с возвращаемым
+  CompoundTag сохранены без изменения поведения для остальных потребителей.
+- PacketConfigRegistries: чтение отдельных значений реестра через readAnyNBT.
+- Registries: то же для восстановления значений из внутреннего кэша.
+- PacketEnabledPacksData: то же для данных известных пакетов.
 
-Относительно ревизии 2 изменился только LangResourcePack.class.
-Относительно присланной базы изменены 6 классов. Все остальные распакованные
-записи побайтово сохранены, включая ресурсы, Mixins и вложенные библиотеки.
-Изменения выполнены через ASM с пересчётом максимального стека, без сырой замены
-байтов. Конструктор LangResourcePack() и пространства имён ресурсов сохранены.
+Изменены только эти четыре класса относительно ревизии 3. Данные не отбрасываются,
+ошибки повреждённого NBT не подавляются. Записывающий код уже поддерживает Tag.
+Изменения выполнены ASM с корректными дескрипторами, кадрами стека и пересчётом
+максимального стека. Метод декодера компилируется JDK из исходника внутри Patch.java
+и переносится в Reader. Новых внешних библиотек или классов в JAR не добавлено.
+Вложенный OpenNBT не изменён: это избегает изменения общей библиотеки других модов.
 
-ПРОВЕРКИ
+ПРЕЖНИЕ ИСПРАВЛЕНИЯ СОХРАНЕНЫ
 
-- ASM BasicVerifier: 7690 классов, 62353 исполняемых метода, 0 ошибок анализатора
-  в базе и результате. Это не проверка иерархии всех внешних классов.
-- javap -verbose: изменённый класс читается без ошибок.
-- LifecycleTest под -Xverify:all: одна настоящая @Mod, правильный подписчик,
-  сохранён @SubscribeEvent; настоящий конструктор backend создаёт core, а
-  настоящий construct вызывает initModules один раз. Зависимости — двойники;
-  полный ReplayMod и NeoForge в этом тесте не запускаются.
-- LangResourcePackTest под -Xverify:all: настоящий класс читает из настоящего JAR
-  все 24 языка, сохраняет значения и псевдонимы клавиш, перечисляет 24 ресурса
-  и читает каждый через отложенный IoSupplier. Minecraft/FML/SecureJar API —
-  двойники; Gson 2.10.1 и Commons IO 2.15.1 — библиотеки из Maven Central с
-  проверенными контрольными суммами. Это не тест игрового клиента.
-- Регрессия: ревизия 2 проваливает перечисление (пустой список), ревизия 3 проходит.
-- ZIP: CRC, уникальность имён, сохранение состава записей.
-- TOML: одна запись мода; все 10 Mixin-конфигураций, 102 перечисленных Mixin-класса
-  и классы плагинов присутствуют. Применение Mixins не выполнялось.
-- Все 12 заявленных вложенных JAR: CRC и отсутствие повторов имён.
-- Повторная сборка из той же базы побайтово совпала с результатом.
+- Контейнер ищется по reforgedplaymod в LangResourcePack, ReplayModBackend,
+  IrisODSFrameCapturer.
+- Настоящий ReplayModBackend и подписчики KeyBindingRegistry/ReplayModRecording
+  зарегистрированы под ID из TOML; пустая заглушка снята с регистрации.
+- LangResourcePack: исправлены шаблон имён .lang, выбор группы региона и путь
+  отложенного чтения переводов. Все 24 языка и пространства имён сохранены.
 
-АКТУАЛЬНАЯ ОФИЦИАЛЬНАЯ ДОКУМЕНТАЦИЯ ДЛЯ 1.21.1
+В сумме относительно присланной базы изменены 10 классов; остальные распакованные
+записи JAR побайтово совпадают, включая ресурсы, Mixins и вложенные библиотеки.
 
-https://docs.neoforged.net/docs/1.21.1/gettingstarted/modfiles/#javafml-and-mod
-https://docs.neoforged.net/docs/1.21.1/concepts/events/#the-mod-lifecycle
-https://docs.neoforged.net/docs/1.21.1/concepts/events/#eventbussubscriber
-Снимок neoforged/Documentation: 4a680cdd4d15013b65fd84998d1f4cd7e2885ae5.
+ПРИСЛАННЫЙ SABLE REPLAY COMPAT
 
-Подтверждено: @Mod.value должен соответствовать modId из TOML; конструктор
-вызывается до регистрации подписчиков, затем следует FMLConstructModEvent.
-Для NeoForge новее 21.1.180 выбор шины автоматический; старый параметр bus
-сохранён, но игнорируется и не является причиной данного сбоя.
-Несколько @Mod для одного modId допустимы; дубликаты записей TOML — другая
-проблема. Заглушка снята с регистрации, чтобы запускался реальный backend.
+Файл sablereforgedplay-1.21.1-1.0.0.jar, modId sablereplay, проверен по метаданным
+и байткоду. Он перенаправляет снимки движения Sable через обычную сеть и меняет
+проверки подключения при быстром воспроизведении. NBT-парсер ReplayStudio не меняет.
+Его ссылки на ReplayModRecording.instance, getConnectionEventHandler,
+ConnectionEventHandler.getPacketListener, ReplayModReplay.instance/getReplayHandler
+не затронуты этим патчем. Mod ID reforgedplaymod сохранён.
+Файл Sable-фикса не изменён и не включён внутрь ReForgedPlay.
+SHA256 Sable-фикса: baa61b8f28b1d1b0dd40758114c27f60ef7414704a24cff2b0762b8f253eb93e
+Совместный игровой запуск с Sable не проводился.
 
-Дополнительно проверены исходники ветки FancyModLoader 1.21.1:
-https://github.com/neoforged/FancyModLoader/blob/44982c69cddbb01b27318dfcac0b3c707b3e94a9/loader/src/main/java/net/neoforged/fml/ModLoader.java
-https://github.com/neoforged/FancyModLoader/blob/44982c69cddbb01b27318dfcac0b3c707b3e94a9/loader/src/main/java/net/neoforged/fml/javafmlmod/AutomaticEventSubscriber.java
-https://github.com/neoforged/FancyModLoader/blob/44982c69cddbb01b27318dfcac0b3c707b3e94a9/loader/src/main/java/net/neoforged/fml/javafmlmod/FMLModContainer.java
-https://github.com/neoforged/FancyModLoader/blob/44982c69cddbb01b27318dfcac0b3c707b3e94a9/loader/src/main/java/net/neoforged/fml/loading/LoadingModList.java
-Также проверена точка ClientModLoader.begin в патче Minecraft ветки NeoForge
-1.21.1, коммит 624c929f49920c250166e2a8df7af87f16d220ef.
-Эти снимки веток не выдаются за точные бинарные FML 4.0.42 / NeoForge 21.1.234.
+ПРОВЕРКИ РЕВИЗИИ 4
+
+1. RegistryNbtTest под -Xverify:all, БЕЗ двойников Minecraft/FML:
+   настоящие ReplayStudio, PacketLib, перенесённый Netty, OpenNBT.
+   Успешны циклы записи и обратного чтения:
+   - CompoundTag и проблемный ByteArrayTag (тип 7);
+   - все 12 NBT-типов, пустые массивы/списки/CompoundTag, отсутствующие значения;
+   - PacketConfigRegistries с побайтово равной перезаписью;
+   - внутренний кэш Registries.writeInternal/readInternal;
+   - PacketEnabledPacksData;
+   - реальная цепочка ReplayInputStream -> RegistriesBuilder -> PacketConfigRegistries
+     на синтетическом потоке состояния CONFIGURATION, без изменения байтов пакета.
+   Неизвестный тип и усечённый NBT отклоняются. PacketLib сообщает усечение
+   исключением границ буфера, неизвестный тип — IOException; оба считаются ошибкой.
+   Для теста использованы обычные зависимости Minecraft из Maven Central:
+   Gson 2.10.1, Commons Lang 3.14.0, Guava 33.2.1-jre, fastutil 8.5.12;
+   контрольные суммы загруженных библиотек проверены.
+2. LifecycleTest и LangResourcePackTest под -Xverify:all повторно прошли:
+   регистрация/вызов инициализации, чтение и перечисление всех 24 языков.
+   В этих двух тестах Minecraft/FML API заменены двойниками, как и ранее.
+3. ASM BasicVerifier: база 7690 классов / 62353 исполняемых метода / 0 ошибок;
+   результат 7690 классов / 62356 методов / 0 ошибок. Добавлены три метода Reader.
+   Анализатор не проверяет всю внешнюю иерархию и применение Mixins.
+4. javap -verbose читает все четыре дополнительно изменённых класса.
+5. ZIP CRC, уникальность имён, сохранение состава записей, один modId в TOML,
+   целостность 12 вложенных библиотек. Mixin-конфигурации и ресурсы не изменены.
+6. Повторная сборка из той же базы побайтово совпала с результатом.
 
 ОГРАНИЧЕНИЯ
 
-Реальный запуск Minecraft с NeoForge 21.1.234, применение Mixins, запись,
-воспроизведение, управление камерой и экспорт в вашей сборке НЕ подтверждены.
-В среде нет подготовленного клиента. Точные библиотеки NeoForge недоступны:
-CONNECT к maven.neoforged.net отклонён сетевой политикой (403); искомого loader
-4.0.42 в Maven Central нет (404). Сетевые настройки среды не менялись.
-Статические проверки и тесты с двойниками не доказывают полной работоспособности.
+Новый лог подтверждает, что игра дошла до сохранения записи. Полный запуск
+ревизии 4 в вашей сборке, обработка вашего фактического .mcpr, MarkerProcessor,
+применение Mixins, совместная работа с Sable, запись/воспроизведение/экспорт
+в игровом клиенте здесь НЕ проверены. Тест потока ReplayStudio синтетический;
+он не заменяет полный запуск Minecraft.
+В среде нет подготовленного клиента; точные библиотеки NeoForge блокируются
+сетевой политикой (CONNECT 403 к maven.neoforged.net). Настройки среды не менялись.
+
+ОФИЦИАЛЬНЫЕ ИСТОЧНИКИ ПРЕЖНИХ ПРОВЕРОК
+
+https://docs.neoforged.net/docs/1.21.1/gettingstarted/modfiles/#javafml-and-mod
+https://docs.neoforged.net/docs/1.21.1/concepts/events/#the-mod-lifecycle
+https://github.com/neoforged/FancyModLoader/blob/44982c69cddbb01b27318dfcac0b3c707b3e94a9/loader/src/main/java/net/neoforged/fml/javafmlmod/AutomaticEventSubscriber.java
+Снимок Documentation: 4a680cdd4d15013b65fd84998d1f4cd7e2885ae5.
+Для NeoForge новее 21.1.180 bus у EventBusSubscriber сохранён, но игнорируется;
+шина определяется автоматически. Исправлены именно modid и точка входа.
 
 УСТАНОВКА
 
-Замените предыдущий fixed.jar этим файлом. В mods оставьте один ReForgedPlay.
-Старые версии и patched-v2.jar храните вне mods. При сбое нужен новый latest.log.
+Замените предыдущий reforgedplay-fix-1.21.1-0.3.2-fixed.jar новым файлом.
+Оставьте один ReForgedPlay в mods. Отдельный sablereforgedplay-1.21.1-1.0.0.jar
+можно оставить рядом: это другой мод, а не вторая копия ReForgedPlay.
 
-ВОСПРОИЗВЕДЕНИЕ (Java 21; рабочий каталог — корень репозитория)
+ВОСПРОИЗВЕДЕНИЕ (JDK 21; рабочий каталог — корень репозитория)
 
-Сборка из присланной базы:
+Сборка:
 java --add-exports java.base/jdk.internal.org.objectweb.asm=ALL-UNNAMED --add-exports java.base/jdk.internal.org.objectweb.asm.tree=ALL-UNNAMED --add-exports java.base/jdk.internal.org.objectweb.asm.tree.analysis=ALL-UNNAMED tools/Patch.java /path/to/patched.jar /path/to/output.jar
-Проверка регистрации:
-java -Xverify:all --add-exports java.base/jdk.internal.org.objectweb.asm=ALL-UNNAMED --add-exports java.base/jdk.internal.org.objectweb.asm.tree=ALL-UNNAMED tools/LifecycleTest.java /path/to/output.jar
-Проверка переводов:
-java -Xverify:all tools/LangResourcePackTest.java /path/to/output.jar /path/to/gson-2.10.1.jar /path/to/commons-io-2.15.1.jar
-Анализ всех методов:
-java -Xmx2g --add-exports java.base/jdk.internal.org.objectweb.asm=ALL-UNNAMED --add-exports java.base/jdk.internal.org.objectweb.asm.tree=ALL-UNNAMED --add-exports java.base/jdk.internal.org.objectweb.asm.tree.analysis=ALL-UNNAMED tools/BytecodeAudit.java /path/to/patched.jar /path/to/output.jar
+Анализ байткода (ожидается три добавленных метода):
+java -Xmx2g --add-exports java.base/jdk.internal.org.objectweb.asm=ALL-UNNAMED --add-exports java.base/jdk.internal.org.objectweb.asm.tree=ALL-UNNAMED --add-exports java.base/jdk.internal.org.objectweb.asm.tree.analysis=ALL-UNNAMED tools/BytecodeAudit.java /path/to/patched.jar /path/to/output.jar 3
+Тест NBT (Linux, библиотеки теста в test-libs; opennbt извлечён из вложенного JAR):
+java -Xverify:all --class-path '/path/to/output.jar:test-libs/*' tools/RegistryNbtTest.java
+На Windows разделитель classpath — точка с запятой.
