@@ -1,34 +1,45 @@
-ReForgedPlay Fix 0.3.2 / Minecraft 1.21.1 / NeoForge
+ReForgedPlay Fix 0.3.2 - revision 2
+Target: Minecraft 1.21.1, NeoForge 21.1.234, Java 21.
+Base: user-supplied patched.jar, SHA256
+7b625eac1e2d74d31ffb264fa3bd97fd650feb4bbf94701c39c04e8d640e2669
+Output SHA256:
+de7995ac95a89a5bef1ef89000f76346cfce07d077808ee4d108d62a00af8e18
 
-Base: user-supplied reforgedplay-fix-1.21.1-0.3.2-patched.jar.
-An unmodified upstream original was not supplied.
-Input SHA256: 7b625eac1e2d74d31ffb264fa3bd97fd650feb4bbf94701c39c04e8d640e2669
-Output SHA256: c45e08dfb5495f6207a91c2adfc4b762bdd6c65a8447686335a1036058872914
+New crash: InputReplayTimer.updateInReplay dereferences null ReplayModReplay.instance.
+Root cause in supplied JAR: reforgedplaymod registers an empty ReForgedPlayModStub;
+the real ReplayModBackend @Mod and event subscribers still target replaymod.
+The core and replay modules therefore never get constructed through the mod entrypoint.
 
-Changed through ASM, without raw byte replacement:
-- LangResourcePack constructor: LoadingModList.getModFileById("reforgedplaymod"); matching error message.
-- ReplayModBackend.getVersion: same corrected container lookup.
-- IrisODSFrameCapturer static initializer: same corrected container lookup.
+ASM fixes (6 classes total):
+- ReForgedPlayModStub: remove only @Mod annotation; retain class.
+- ReplayModBackend: @Mod and EventBusSubscriber modid -> reforgedplaymod.
+- KeyBindingRegistry and ReplayModRecording: EventBusSubscriber modid -> reforgedplaymod.
+- Retain revision 1 container lookup corrections in ReplayModBackend,
+  LangResourcePack and IrisODSFrameCapturer.
+No null-check workaround, removed Mixins or suppressed exceptions.
+Descriptor already declares exactly one reforgedplaymod; unchanged.
+All other archive entries, including resource namespaces and embedded dependencies,
+are byte-for-byte unchanged after decompression.
 
-The supplied neoforge.mods.toml already has exactly one mods entry, ID reforgedplaymod; it is preserved.
-All other JAR entries are byte-for-byte unchanged when decompressed.
-All 10 declared Mixin configurations and all 26 language resource files are preserved.
-assets/replaymod and resource namespaces are unchanged.
-No Mixins, recording, playback, camera, UI or export code was removed.
+Validation:
+- Parsed 7690 classes; ASM BasicVerifier passed 57 methods in 6 changed classes.
+- javap -verbose reads all 6 changed classes.
+- Unique ZIP entries, CRC, same archive membership, one TOML mod declaration.
+- LifecycleTest asserts exactly one real @Mod entrypoint, matching backend subscriber,
+  no remaining replaymod event subscribers, and retained @SubscribeEvent.
+- Real backend constructor/event method executed with dependency doubles:
+  core is constructed; initModules is invoked exactly once.
+- Previous JAR fails the registration regression check; revision 2 passes.
 
-Checks passed:
-- ZIP CRC and unique entry names; entry membership unchanged.
-- ASM parsing of 7690 top-level classes.
-- ASM BasicVerifier analysis of 32 methods in the three changed classes.
-- javap -verbose of three changed classes and Mixin_InjectDynamicResourcePacks.
-- Public LangResourcePack() constructor remains present and Mixin invocation unchanged.
-- TOML has exactly one mod declaration and referenced Mixin configs exist.
-- Declared jarjar dependency files exist.
+LIMIT: This is NOT a full NeoForge integration test. Actual client startup, runtime
+Mixin application, recording, replay and export are not verified in this cloud
+workspace. New user crash report shows revision 1 reached Minecraft.runTick and
+loaded replaymod_lang; it does not prove revision 2 gameplay functionality.
 
-LIMITS: Real Minecraft / NeoForge startup, runtime Mixin application, recording,
-playback and export have NOT been tested. Static checks do not prove those work.
-This cloud workspace has no configured Minecraft client installation or game session.
+Install only the updated fixed.jar. Move every older ReForgedPlay JAR outside mods.
+Do not put patched-v2.jar from this repository alongside it.
 
-Installation: move all old ReForgedPlay JARs outside mods. Install only
-reforgedplay-fix-1.21.1-0.3.2-fixed.jar. Do not install it alongside the old JAR.
-If startup fails, provide the new latest.log and crash report.
+Reproduce from the user-supplied base (Java 21):
+java --add-exports java.base/jdk.internal.org.objectweb.asm=ALL-UNNAMED --add-exports java.base/jdk.internal.org.objectweb.asm.tree=ALL-UNNAMED --add-exports java.base/jdk.internal.org.objectweb.asm.tree.analysis=ALL-UNNAMED tools/Patch.java /path/to/patched.jar /path/to/output.jar
+Test:
+java --add-exports java.base/jdk.internal.org.objectweb.asm=ALL-UNNAMED --add-exports java.base/jdk.internal.org.objectweb.asm.tree=ALL-UNNAMED tools/LifecycleTest.java /path/to/output.jar
