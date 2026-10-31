@@ -37,7 +37,8 @@ public class BytecodeAudit {
         System.out.println("BASE: "+base.classes+" classes, "+base.methods+" methods, "+base.failures.size()+" analyzer failures");
         System.out.println("FIXED: "+fixed.classes+" classes, "+fixed.methods+" methods, "+fixed.failures.size()+" analyzer failures");
         int expectedMethodDelta=args.length>2?Integer.parseInt(args[2]):0;
-        if(base.classes!=fixed.classes || fixed.methods!=base.methods+expectedMethodDelta) throw new AssertionError("Unexpected class/method count change");
+        int expectedClassDelta=args.length>3?Integer.parseInt(args[3]):0;
+        if(fixed.classes!=base.classes+expectedClassDelta || fixed.methods!=base.methods+expectedMethodDelta) throw new AssertionError("Unexpected class/method count change");
         for(var failure:fixed.failures.entrySet()) {
             if(!failure.getValue().equals(base.failures.get(failure.getKey()))) {
                 throw new AssertionError("New analyzer failure: "+failure);
