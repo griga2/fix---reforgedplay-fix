@@ -5,8 +5,40 @@ import jdk.internal.org.objectweb.asm.*;
 import jdk.internal.org.objectweb.asm.tree.*;
 import jdk.internal.org.objectweb.asm.tree.analysis.*;
 public class Patch {
+ static int patchLanguageEnumeration(ClassNode c) {
+  int changes=0;
+  for(MethodNode m:c.methods) {
+   int groups=0;
+   for(AbstractInsnNode ins:m.instructions.toArray()) {
+    if(m.name.equals("<clinit>") && ins instanceof LdcInsnNode l &&
+       "^([a-z][a-z])_([a-z][a-z]).lang$".equals(l.cst)) {
+     l.cst="^([a-z][a-z])_([a-zA-Z][a-zA-Z])\\.lang$";changes++;
+    }
+    if(m.name.equals("lambda$findResources$4") && ins instanceof MethodInsnNode call &&
+       call.owner.equals("java/util/regex/Matcher") && call.name.equals("group")) {
+     if(++groups==2) {
+      if(ins.getPrevious().getOpcode()!=Opcodes.ICONST_1)throw new IllegalStateException("Unexpected locale group");
+      m.instructions.set(ins.getPrevious(),new InsnNode(Opcodes.ICONST_2));
+      InsnList normalize=new InsnList();
+      normalize.add(new FieldInsnNode(Opcodes.GETSTATIC,"java/util/Locale","ROOT","Ljava/util/Locale;"));
+      normalize.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,"java/lang/String","toLowerCase","(Ljava/util/Locale;)Ljava/lang/String;",false));
+      m.instructions.insert(ins,normalize);changes++;
+     }
+    }
+    if(m.name.equals("lambda$findResources$1") && ins instanceof MethodInsnNode call &&
+       call.owner.equals(c.name) && call.name.equals("readFile")) {
+     InsnList prefix=new InsnList();
+     prefix.add(new LdcInsnNode("assets/replaymod/"));
+     prefix.add(new InsnNode(Opcodes.SWAP));
+     prefix.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,"java/lang/String","concat","(Ljava/lang/String;)Ljava/lang/String;",false));
+     m.instructions.insertBefore(ins,prefix);changes++;
+    }
+   }
+  }
+  return changes;
+ }
  public static void main(String[] args) throws Exception {
-  int patched=0, classes=0, methods=0, annotations=0;
+  int patched=0, classes=0, methods=0, annotations=0, resourcePatches=0;
   try(ZipFile in=new ZipFile(args[0]); ZipOutputStream out=new ZipOutputStream(Files.newOutputStream(Path.of(args[1])))) {
    Set<String> names=new HashSet<>();
    for(var entries=in.entries();entries.hasMoreElements();) {
@@ -44,8 +76,12 @@ public class Patch {
       }
       if(changed && m.name.equals("<init>"))for(AbstractInsnNode ins:m.instructions.toArray())if(ins instanceof LdcInsnNode l && "Could not find ReplayMod container for replaymod".equals(l.cst))l.cst="Could not find ReplayMod container for reforgedplaymod";
      }
+     if(c.name.equals("com/replaymod/core/versions/LangResourcePack")) {
+      resourcePatches=patchLanguageEnumeration(c);
+      changed|=resourcePatches>0;
+     }
      if(changed) {
-      ClassWriter w=new ClassWriter(0);c.accept(w);b=w.toByteArray();
+      ClassWriter w=new ClassWriter(ClassWriter.COMPUTE_MAXS);c.accept(w);b=w.toByteArray();
       ClassNode reread=new ClassNode();new ClassReader(b).accept(reread,ClassReader.EXPAND_FRAMES);
       for(MethodNode m:reread.methods)if((m.access&(Opcodes.ACC_ABSTRACT|Opcodes.ACC_NATIVE))==0){new Analyzer<BasicValue>(new BasicVerifier()).analyze(reread.name,m);methods++;}
      }
@@ -54,6 +90,7 @@ public class Patch {
    }
   }
   if(annotations!=5)throw new Exception("Expected five registration changes, got "+annotations);
+  if(resourcePatches!=3)throw new Exception("Expected three language enumeration fixes, got "+resourcePatches);
   System.out.println("Registration changes="+annotations);
   if(patched!=3)throw new Exception("Expected three patches, got "+patched);
   System.out.println("Parsed classes="+classes+"; patched lookup="+patched+"; verified methods="+methods);
